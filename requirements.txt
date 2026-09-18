@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+python-dotenv
+pydantic
+requests
+langchain==0.3.27
+langchain-core==0.3.72
+langchain-openai==0.3.28
+langchain-community
+duckduckgo-search
+wikipedia
