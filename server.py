@@ -6,7 +6,6 @@ from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
-from langchain.agents import create_tool_calling_agent, AgentExecutor
 
 from tools import search_tool
 
@@ -59,74 +58,6 @@ parser = PydanticOutputParser(
 )
 
 
-prompt = ChatPromptTemplate.from_messages(
-    [
-        (
-            "system",
-            """
-You are a research assistant.
-
-Research the user's query using the search tool when necessary.
-
-Use the search tool only when you need additional information.
-Do not repeatedly search for the same information.
-
-After gathering enough information, stop using tools and produce the final answer.
-
-Return ONLY valid JSON.
-
-The response must contain exactly these four fields:
-
-topic
-summary
-sources
-tools_used
-
-The topic field must be a string.
-
-The summary field must be a string.
-
-The sources field must be an array of objects.
-Each source object must contain:
-title
-url
-
-The tools_used field must be an array of strings.
-
-Do not add extra fields.
-Do not return markdown.
-Do not return a code block.
-""",
-        ),
-
-        ("human", "{query}"),
-
-        ("placeholder", "{agent_scratchpad}"),
-    ]
-)
-
-
-tools = [
-    search_tool
-]
-
-
-agent = create_tool_calling_agent(
-    llm=llm,
-    prompt=prompt,
-    tools=tools
-)
-
-
-agent_executor = AgentExecutor(
-    agent=agent,
-    tools=tools,
-    verbose=True,
-    max_iterations=5,
-    handle_parsing_errors=True
-)
-
-
 @app.get("/")
 def home():
     return {
@@ -141,18 +72,73 @@ def research(request: ResearchRequest):
 
         print("USER QUERY:", request.query)
 
-        raw_response = agent_executor.invoke(
-            {
-                "query": request.query,
-                "chat_history": []
-            }
+        # Search the web
+        search_results = search_tool.run(request.query)
+
+        print("SEARCH RESULTS:", search_results)
+
+        # Ask AI to analyze the search results
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    """
+You are an AI research assistant.
+
+Use the provided web search results to answer the user's research question.
+
+Return ONLY valid JSON.
+
+The JSON must contain exactly these fields:
+
+topic
+summary
+sources
+tools_used
+
+topic must be a string.
+
+summary must be a clear and useful explanation.
+
+sources must be an array of objects.
+Each object must contain:
+title
+url
+
+tools_used must be an array of strings.
+
+Do not use markdown.
+Do not use code blocks.
+Do not add extra fields.
+
+{format_instructions}
+"""
+                ),
+                (
+                    "human",
+                    """
+User question:
+{query}
+
+Web search results:
+{search_results}
+"""
+                )
+            ]
+        ).partial(
+            format_instructions=parser.get_format_instructions()
         )
 
-        output = raw_response.get("output")
+        messages = prompt.format_messages(
+            query=request.query,
+            search_results=search_results
+        )
 
-        print("AI OUTPUT:", output)
+        response = llm.invoke(messages)
 
-        structured_response = parser.parse(output)
+        print("AI RAW RESPONSE:", response.content)
+
+        structured_response = parser.parse(response.content)
 
         print("PARSED RESPONSE:", structured_response)
 
@@ -164,7 +150,7 @@ def research(request: ResearchRequest):
 
         return {
             "topic": request.query,
-            "summary": f"AI response could not be parsed: {str(e)}",
+            "summary": f"Research failed: {str(e)}",
             "sources": [],
             "tools_used": []
         }
